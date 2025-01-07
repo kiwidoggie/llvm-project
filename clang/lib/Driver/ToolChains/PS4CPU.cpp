@@ -447,8 +447,14 @@ void toolchains::PS4PS5Base::addClangTargetOptions(
         << A->getAsString(DriverArgs) << getTriple().str();
   }
 
-  CC1Args.push_back("-fno-use-init-array");
-
+  // ----- Start OpenOrbis Changes -----
+  // CC1Args.push_back("-fno-use-init-array");
+  if (!DriverArgs.hasArg(options::OPT_fuse_init_array,
+                           options::OPT_fno_use_init_array,
+                           true))
+    CC1Args.push_back("-fno-use-init-array");
+  // ----- End OpenOrbis Changes -----
+  
   // Default to `hidden` visibility for PS5.
   if (getTriple().isPS5() &&
       !DriverArgs.hasArg(options::OPT_fvisibility_EQ,

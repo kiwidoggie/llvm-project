@@ -1,0 +1,717 @@
+From 3597af07ee7d4264ba396bf7173b424ed73bbe0f Mon Sep 17 00:00:00 2001
+From: kiwidoggie <forums@allenthinks.com>
+Date: Fri, 13 Dec 2024 15:22:25 -0500
+Subject: [PATCH 1/2] Manually port all of SpecterDevs LLVM patches to 19.x
+
+---
+ clang/lib/Driver/ToolChains/PS4CPU.cpp        |  10 +-
+ lld/ELF/Driver.cpp                            |   7 +
+ lld/ELF/ScriptParser.cpp                      |   5 +
+ lld/ELF/SyntheticSections.cpp                 | 330 ++++++++++++++++--
+ lld/ELF/SyntheticSections.h                   |  19 +
+ lld/ELF/Writer.cpp                            |  23 ++
+ .../include/llvm/BinaryFormat/DynamicTags.def |  31 ++
+ llvm/include/llvm/BinaryFormat/ELF.h          |  14 +-
+ llvm/tools/llvm-readobj/ELFDumper.cpp         |  11 +
+ 9 files changed, 421 insertions(+), 29 deletions(-)
+
+diff --git a/clang/lib/Driver/ToolChains/PS4CPU.cpp b/clang/lib/Driver/ToolChains/PS4CPU.cpp
+index 974e486a0082..3e9ebbac9135 100644
+--- a/clang/lib/Driver/ToolChains/PS4CPU.cpp
++++ b/clang/lib/Driver/ToolChains/PS4CPU.cpp
+@@ -447,8 +447,14 @@ void toolchains::PS4PS5Base::addClangTargetOptions(
+         << A->getAsString(DriverArgs) << getTriple().str();
+   }
+ 
+-  CC1Args.push_back("-fno-use-init-array");
+-
++  // ----- Start OpenOrbis Changes -----
++  // CC1Args.push_back("-fno-use-init-array");
++  if (!DriverArgs.hasArg(options::OPT_fuse_init_array,
++                           options::OPT_fno_use_init_array,
++                           true))
++    CC1Args.push_back("-fno-use-init-array");
++  // ----- End OpenOrbis Changes -----
++  
+   // Default to `hidden` visibility for PS5.
+   if (getTriple().isPS5() &&
+       !DriverArgs.hasArg(options::OPT_fvisibility_EQ,
+diff --git a/lld/ELF/Driver.cpp b/lld/ELF/Driver.cpp
+index eb6734dfd458..8c7957b65d93 100644
+--- a/lld/ELF/Driver.cpp
++++ b/lld/ELF/Driver.cpp
+@@ -176,6 +176,13 @@ static std::tuple<ELFKind, uint16_t, uint8_t> parseEmulation(StringRef emul) {
+     osabi = ELFOSABI_FREEBSD;
+   }
+ 
++  // ----- Start OpenOrbis Changes -----
++  if (s.ends_with("_ps4")) {
++    s = s.drop_back(4);
++    osabi = ELFOSABI_PS4;
++  }
++  // ----- End OpenOrbis Changes -----
++
+   std::pair<ELFKind, uint16_t> ret =
+       StringSwitch<std::pair<ELFKind, uint16_t>>(s)
+           .Cases("aarch64elf", "aarch64linux", {ELF64LEKind, EM_AARCH64})
+diff --git a/lld/ELF/ScriptParser.cpp b/lld/ELF/ScriptParser.cpp
+index 49aa7e637490..5670d7110c35 100644
+--- a/lld/ELF/ScriptParser.cpp
++++ b/lld/ELF/ScriptParser.cpp
+@@ -1658,6 +1658,11 @@ unsigned ScriptParser::readPhdrType() {
+                      .Case("PT_OPENBSD_SYSCALLS", PT_OPENBSD_SYSCALLS)
+                      .Case("PT_OPENBSD_WXNEEDED", PT_OPENBSD_WXNEEDED)
+                      .Case("PT_OPENBSD_BOOTDATA", PT_OPENBSD_BOOTDATA)
++                     // ----- Start OpenOrbis Changes -----
++                     .Case("PT_SCE_DYNLIBDATA", PT_SCE_DYNLIBDATA)
++                     .Case("PT_SCE_PROC_PARAM", PT_SCE_PROC_PARAM)
++                     .Case("PT_SCE_RELRO", PT_SCE_RELRO)
++                     // ----- End OpenOrbis Changes -----
+                      .Default(-1);
+ 
+   if (ret == (unsigned)-1) {
+diff --git a/lld/ELF/SyntheticSections.cpp b/lld/ELF/SyntheticSections.cpp
+index 41053c647275..c04a05573583 100644
+--- a/lld/ELF/SyntheticSections.cpp
++++ b/lld/ELF/SyntheticSections.cpp
+@@ -42,6 +42,10 @@
+ #include "llvm/Support/LEB128.h"
+ #include "llvm/Support/Parallel.h"
+ #include "llvm/Support/TimeProfiler.h"
++// ----- Start OpenOrbis Changes -----
++#include "llvm/Support/SHA1.h"
++#include "llvm/Support/Base64.h"
++// ----- End OpenOrbis Changes -----
+ #include <cinttypes>
+ #include <cstdlib>
+ 
+@@ -59,6 +63,14 @@ using llvm::support::endian::write64le;
+ 
+ constexpr size_t MergeNoTailSection::numShards;
+ 
++// ----- Start OpenOrbis Changes -----
++SmallVector<size_t, 0> sceModuleOffsets;
++SmallVector<size_t, 0> sceLibraryOffsets;
++SmallVector<std::string, 0> sceModuleList;
++bool sceModuleListInit = false;
++size_t sceFileNameOffset;
++// ----- End OpenOrbis Changes -----
++
+ static uint64_t readUint(uint8_t *buf) {
+   return config->is64 ? read64(buf) : read32(buf);
+ }
+@@ -1334,9 +1346,49 @@ DynamicSection<ELFT>::computeContents() {
+     addInt(config->enableNewDtags ? DT_RUNPATH : DT_RPATH,
+            part.dynStrTab->addString(config->rpath));
+ 
+-  for (SharedFile *file : ctx.sharedFiles)
+-    if (file->isNeeded)
+-      addInt(DT_NEEDED, part.dynStrTab->addString(file->soName));
++  // ----- Start OpenOrbis Changes -----
++  uint64_t moduleId = 1;
++  uint64_t moduleValue = 0;
++  uint64_t moduleOffset = 0;
++  uint64_t libraryValue = 0;
++  uint64_t libraryAttrValue = 0;
++  std::string libName;
++  std::string moduleName;
++  const InputSection &sceDynlibdataSec = *part.sceDynlibdataFingerprint;
++
++  for (SharedFile *file : sharedFiles) {
++    if (file->isNeeded) {
++      if (config->osabi == ELFOSABI_PS4) {
++        // Add needed
++        addInt(DT_NEEDED, sceLibraryOffsets[moduleId - 1]);
++        moduleOffset = sceModuleOffsets[moduleId - 1];
++
++        // Add sce import module
++        moduleValue = moduleOffset;
++        moduleValue |= (1UL << 32); // Major version
++        moduleValue |= (1UL << 40); // Minor version
++        moduleValue |= (moduleId << 48); // Module ID
++        addInt(DT_SCE_NEEDED_MODULE, moduleValue);
++
++        // Add sce import lib
++        libraryValue = moduleOffset;
++        libraryValue |= (1UL << 32); // Version
++        libraryValue |= (moduleId << 48); // Module ID
++        addInt(DT_SCE_IMPORT_LIB, libraryValue);
++
++        // Add sce import attr
++        libraryAttrValue = 0x9; // Attributes (always 0x9)
++        libraryAttrValue |= (moduleId << 48); // Module ID
++        addInt(DT_SCE_IMPORT_LIB_ATTR, libraryAttrValue);
++
++        moduleId++;
++      } else {
++        addInt(DT_NEEDED, part.dynStrTab->addString(file->soName));
++      }
++    }
++  }
++
++  // ----- End OpenOrbis Changes -----
+ 
+   if (isMain) {
+     if (!config->soName.empty())
+@@ -1374,15 +1426,25 @@ DynamicSection<ELFT>::computeContents() {
+     dtFlags |= DF_ORIGIN;
+     dtFlags1 |= DF_1_ORIGIN;
+   }
+-  if (!config->zText)
++  if (!config->zText || config->osabi == ELFOSABI_PS4)
+     dtFlags |= DF_TEXTREL;
+   if (ctx.hasTlsIe && config->shared)
+     dtFlags |= DF_STATIC_TLS;
+ 
+-  if (dtFlags)
+-    addInt(DT_FLAGS, dtFlags);
+-  if (dtFlags1)
+-    addInt(DT_FLAGS_1, dtFlags1);
++  // ----- Start OpenOrbis Changes -----
++  if (config->osabi == ELFOSABI_PS4) {
++    addInt(DT_FLAGS, DF_TEXTREL);
++
++    // Add sce metadata tags
++    addInt(DT_SCE_FINGERPRINT, 0);
++    addInt(DT_SCE_FILENAME, sceFileNameOffset);
++  } else {
++    if (dtFlags)
++      addInt(DT_FLAGS, dtFlags);
++    if (dtFlags1 && config->osabi != ELFOSABI_PS4)
++      addInt(DT_FLAGS_1, dtFlags1);
++  }
++  // ----- End OpenOrbis Changes -----
+ 
+   // DT_DEBUG is a pointer to debug information used by debuggers at runtime. We
+   // need it for each process, so we don't write it for DSOs. The loader writes
+@@ -1395,21 +1457,41 @@ DynamicSection<ELFT>::computeContents() {
+   if (!config->shared && !config->relocatable && !config->zRodynamic)
+     addInt(DT_DEBUG, 0);
+ 
++  // ----- Start OpenOrbis Changes -----
+   if (part.relaDyn->isNeeded()) {
+-    addInSec(part.relaDyn->dynamicTag, *part.relaDyn);
+-    entries.emplace_back(part.relaDyn->sizeDynamicTag,
+-                         addRelaSz(*part.relaDyn));
++    if (config->osabi == ELFOSABI_PS4) {
++      const InputSection &relaDynSec = *part.relaDyn;
++      if (sceDynlibdataSec.getVA() > relaDynSec.getVA()) {
++        warn("RELA table should come after .sce_dynlibdata segment, check the linker script");
++      }
++      addInt(DT_SCE_RELA, relaDynSec.getVA() - sceDynlibdataSec.getVA());
++      addInt(DT_SCE_RELASZ, addRelaSz(*part.relaDyn));
++    } else {
++      addInSec(part.relaDyn->dynamicTag, *part.relaDyn);
++      entries.emplace_back(part.relaDyn->sizeDynamicTag,
++                           addRelaSz(*part.relaDyn));
++    }
++  // ----- End OpenOrbis Changes -----
+ 
+     bool isRela = config->isRela;
+-    addInt(isRela ? DT_RELAENT : DT_RELENT,
+-           isRela ? sizeof(Elf_Rela) : sizeof(Elf_Rel));
++    // ----- Start OpenOrbis Changes -----
++    if (config->osabi == ELFOSABI_PS4) {
++      addInt(isRela ? DT_SCE_RELAENT : DT_RELENT,
++             isRela ? sizeof(Elf_Rela) : sizeof(Elf_Rel));
++    } else {
++      addInt(isRela ? DT_RELAENT : DT_RELENT,
++             isRela ? sizeof(Elf_Rela) : sizeof(Elf_Rel));
++    }
++    // ----- End OpenOrbis Changes -----
+ 
+     // MIPS dynamic loader does not support RELCOUNT tag.
+     // The problem is in the tight relation between dynamic
+     // relocations and GOT. So do not emit this tag on MIPS.
+     if (config->emachine != EM_MIPS) {
+       size_t numRelativeRels = part.relaDyn->getRelativeRelocCount();
+-      if (config->zCombreloc && numRelativeRels)
++      // ----- Start OpenOrbis Changes -----
++      if (config->zCombreloc && numRelativeRels && config->osabi != ELFOSABI_PS4)
++      // ----- End OpenOrbis Changes -----
+         addInt(isRela ? DT_RELACOUNT : DT_RELCOUNT, numRelativeRels);
+     }
+   }
+@@ -1429,8 +1511,19 @@ DynamicSection<ELFT>::computeContents() {
+     addInt(DT_AARCH64_AUTH_RELRENT, sizeof(Elf_Relr));
+   }
+   if (isMain && in.relaPlt->isNeeded()) {
+-    addInSec(DT_JMPREL, *in.relaPlt);
+-    entries.emplace_back(DT_PLTRELSZ, addPltRelSz());
++    // ----- Start OpenOrbis Changes -----
++    if (config->osabi == ELFOSABI_PS4) {
++      const InputSection &relaPltSec = *in.relaPlt;
++      if (sceDynlibdataSec.getVA() > relaPltSec.getVA()) {
++        warn("RELA table should come after .sce_dynlibdata segment, check the linker script");
++      }
++      addInt(DT_SCE_JMPREL, relaPltSec.getVA() - sceDynlibdataSec.getVA());
++      entries.emplace_back(DT_SCE_PLTRELSZ, addPltRelSz());
++    } else {
++      addInSec(DT_JMPREL, *in.relaPlt);
++      entries.emplace_back(DT_PLTRELSZ, addPltRelSz());
++    }
++    // ----- End OpenOrbis Changes -----
+     switch (config->emachine) {
+     case EM_MIPS:
+       addInSec(DT_MIPS_PLTGOT, *in.gotPlt);
+@@ -1457,10 +1550,22 @@ DynamicSection<ELFT>::computeContents() {
+         addInt(DT_RISCV_VARIANT_CC, 0);
+       [[fallthrough]];
+     default:
+-      addInSec(DT_PLTGOT, *in.gotPlt);
++      // ----- Start OpenOrbis Changes -----
++      if (config->osabi == ELFOSABI_PS4) {
++        addInSec(DT_SCE_PLTGOT, *in.gotPlt);
++      } else {
++        addInSec(DT_PLTGOT, *in.gotPlt);
++      }
++      // ----- End OpenOrbis Changes -----
+       break;
+     }
+-    addInt(DT_PLTREL, config->isRela ? DT_RELA : DT_REL);
++    // ----- Start OpenOrbis Changes -----
++    if (config->osabi == ELFOSABI_PS4) {
++      addInt(DT_SCE_PLTREL, config->isRela ? DT_RELA : DT_REL);
++    } else {
++      addInt(DT_PLTREL, config->isRela ? DT_RELA : DT_REL);
++    }
++    // ----- End OpenOrbis Changes -----
+   }
+ 
+   if (config->emachine == EM_AARCH64) {
+@@ -1481,16 +1586,52 @@ DynamicSection<ELFT>::computeContents() {
+     }
+   }
+ 
+-  addInSec(DT_SYMTAB, *part.dynSymTab);
+-  addInt(DT_SYMENT, sizeof(Elf_Sym));
+-  addInSec(DT_STRTAB, *part.dynStrTab);
+-  addInt(DT_STRSZ, part.dynStrTab->getSize());
++  // ----- Start OpenOrbis Changes -----
++  if (config->osabi == ELFOSABI_PS4) {
++    // Symbol table (TODO)
++    const InputSection &symSec = *part.dynSymTab;
++    if (sceDynlibdataSec.getVA() > symSec.getVA()) {
++      warn("Dynamic symbol table should come after .sce_dynlibdata segment, check the linker script");
++    }
++    addInt(DT_SCE_SYMTAB, symSec.getVA() - sceDynlibdataSec.getVA());
++    addInt(DT_SCE_SYMTABSZ, part.dynSymTab->getSize());
++    addInt(DT_SCE_SYMENT, sizeof(Elf_Sym));
++
++    // String table
++    const InputSection &strSec = *part.dynStrTab;
++    if (sceDynlibdataSec.getVA() > strSec.getVA()) {
++      warn("Dynamic string table should come after .sce_dynlibdata segment, check the linker script");
++    }
++    addInt(DT_SCE_STRTAB, strSec.getVA() - sceDynlibdataSec.getVA());
++    addInt(DT_SCE_STRSZ, part.dynStrTab->getSize());
++
++    // Hash table
++    const InputSection &hashSec = *part.hashTab;
++    if (sceDynlibdataSec.getVA() > hashSec.getVA()) {
++      warn("Hash table should come after .sce_dynlibdata segment, check the linker script");
++    }
++    addInt(DT_SCE_HASH, hashSec.getVA() - sceDynlibdataSec.getVA());
++    addInt(DT_SCE_HASHSZ, hashSec.getSize());
++  } else {
++    addInSec(DT_SYMTAB, *part.dynSymTab);
++    addInt(DT_SYMENT, sizeof(Elf_Sym));
++    addInSec(DT_STRTAB, *part.dynStrTab);
++    addInt(DT_STRSZ, part.dynStrTab->getSize());
++  }
++  // ----- End OpenOrbis Changes -----
++
+   if (!config->zText)
+     addInt(DT_TEXTREL, 0);
+-  if (part.gnuHashTab && part.gnuHashTab->getParent())
++  // ----- Start OpenOrbis Changes -----
++  if (part.gnuHashTab && part.gnuHashTab->getParent() && config->osabi != ELFOSABI_PS4)
++  // ----- End OpenOrbis Changes -----
+     addInSec(DT_GNU_HASH, *part.gnuHashTab);
+   if (part.hashTab && part.hashTab->getParent())
+-    addInSec(DT_HASH, *part.hashTab);
++  // ----- Start OpenOrbis Changes -----
++    if (config->osabi != ELFOSABI_PS4) {
++      addInSec(DT_HASH, *part.hashTab);
++    }
++  // ----- End OpenOrbis Changes -----
+ 
+   if (isMain) {
+     if (Out::preinitArray) {
+@@ -2186,10 +2327,115 @@ void SymbolTableBaseSection::sortSymTabSymbols() {
+       *i++ = entry;
+ }
+ 
++// ----- Start OpenOrbis Changes -----
++std::string generateNID(Symbol *b) {
++  std::array<uint8_t, 8> nidHashTruncated;
++  std::string symNameNID;
++  std::string finalNID;
++  char encodedModuleId;
++  int moduleId;
++  int i;
++
++  // Add suffix
++  symNameNID = b->getName().str() + "\x51\x8D\x64\xA6\x35\xDE\xD8\xC1\xE6\xB0\x39\xB1\xC3\xE5\x52\x30";
++  auto nidHash = llvm::SHA1::hash(llvm::arrayRefFromStringRef(symNameNID));
++
++  // Reverse digest, take first 8 bytes, and base64 encode without trailing '='
++  std::reverse_copy(nidHash.begin(), nidHash.begin() + nidHashTruncated.size(), nidHashTruncated.begin());
++
++  auto nid = llvm::encodeBase64(nidHashTruncated);
++  nid = nid.substr(0, nid.length() - 1);
++
++  // Replace forward slashes with dashes for encoding
++  std::replace(nid.begin(), nid.end(), '/', '-');
++
++  // Get containing file for symbol
++  if (b->file == nullptr) {
++    warn("sym '" + b->getName().str() + "' has null file ptr");
++  }
++  auto symFileName = b->file->getName().str();
++
++  // Find module index for NID
++  moduleId = -1;
++  i = 1;
++  for (auto module : sceModuleList) {
++    if (symFileName.find(module) != std::string::npos) {
++      moduleId = i;
++      break;
++    }
++    i++;
++  }
++
++  // This should never realistically happen, as the linker should fail before
++  // this can occur, but better to be safe than sorry
++  if (moduleId < 0)
++    warn("unable to find module for symbol '" + b->getName().str() + "'");
++
++  // Finalize NID. Format: [NID]#[Module Index]#[Library Index]
++  encodedModuleId = char('A' + moduleId);
++  finalNID = nid + "#" + encodedModuleId + "#" + encodedModuleId;
++  return finalNID;
++}
++// ----- End OpenOrbis Changes -----
++
++
+ void SymbolTableBaseSection::addSymbol(Symbol *b) {
+   // Adding a local symbol to a .dynsym is a bug.
+   assert(this->type != SHT_DYNSYM || !b->isLocal());
+-  symbols.push_back({b, strTabSec.addString(b->getName(), false)});
++  +  // ----- Start OpenOrbis Changes -----
++  std::string libName;
++  std::string moduleName;
++  llvm::StringRef libNameRef;
++  llvm::StringRef moduleNameRef;
++  std::string::size_type extpos;
++
++  // Dynamic symbol table is generated differently on PS4 elfs, we need to account for NIDs
++  if (config->osabi == ELFOSABI_PS4 && this == mainPart->dynSymTab.get()) {
++    // If we don't have a module list, we need to create one to track the NID -> module mapping
++    if (!sceModuleListInit) {
++      for (SharedFile *file : sharedFiles) {
++        if (file->isNeeded) {
++          sceModuleList.push_back(file->soName.str());
++
++          // Create lib name string and add it to the dynstr table
++          libName = std::string(file->soName);
++          extpos = libName.find(".so");
++          if (extpos != std::string::npos)
++            libName.replace(extpos, sizeof(".prx"), ".prx");
++
++          libNameRef = saver().save(libName);
++          sceLibraryOffsets.push_back(strTabSec.addString(libNameRef, false));
++        }
++      }
++
++      for (auto module : sceModuleList) {
++        // Create module name string and add it to the dynstr table
++        moduleName = std::string(module);
++        extpos = moduleName.find(".so");
++        if (extpos != std::string::npos)
++          moduleName.erase(extpos, 3);
++
++        moduleNameRef = saver().save(moduleName);
++        sceModuleOffsets.push_back(strTabSec.addString(moduleNameRef, false));
++      }
++
++      sceModuleListInit = true;
++    }
++
++    if (b->file) {
++      // If the symbol has a defined section, it's not of interest to the PS4 linker
++      if (isa<Defined>(b)) {
++        return;
++      }
++
++      std::string nidStr = generateNID(b);
++      llvm::StringRef nidStrRef = saver().save(nidStr);
++      symbols.push_back({b, strTabSec.addString(nidStrRef, false)});
++    }
++  } else {
++    symbols.push_back({b, strTabSec.addString(b->getName(), false)});
++  }
++  // ----- End OpenOrbis Changes -----
+ }
+ 
+ size_t SymbolTableBaseSection::getSymbolIndex(const Symbol &sym) {
+@@ -2216,6 +2462,23 @@ size_t SymbolTableBaseSection::getSymbolIndex(const Symbol &sym) {
+   return symbolIndexMap.lookup(&sym);
+ }
+ 
++// ----- Start OpenOrbis Changes -----
++template <class ELFT>
++SceDynlibdataFingerprintSection<ELFT>::SceDynlibdataFingerprintSection()
++    : SyntheticSection(SHF_ALLOC, SHT_PROGBITS, 16, ".sce_dynlibdata.fingerprint") {
++}
++
++template <class ELFT> void SceDynlibdataFingerprintSection<ELFT>::finalizeContents() {
++  // Fingerprint is always 0x18 bytes
++  size = 0x18;
++}
++
++template <class ELFT> void SceDynlibdataFingerprintSection<ELFT>::writeTo(uint8_t *buf) {
++  char sceFingerprint[] = "OPENORBIS-LLVM-HOMEBREW";
++  strcpy((char*) buf, (const char *)&sceFingerprint);
++}
++// ----- End OpenOrbis Changes -----
++
+ template <class ELFT>
+ SymbolTableSection<ELFT>::SymbolTableSection(StringTableSection &strTabSec)
+     : SymbolTableBaseSection(strTabSec) {
+@@ -4367,7 +4630,9 @@ template <typename ELFT> void elf::writeEhdr(uint8_t *buf, Partition &part) {
+   eHdr->e_ident[EI_DATA] =
+       ELFT::Endianness == endianness::little ? ELFDATA2LSB : ELFDATA2MSB;
+   eHdr->e_ident[EI_VERSION] = EV_CURRENT;
+-  eHdr->e_ident[EI_OSABI] = config->osabi;
++  // ----- Start OpenOrbis Changes -----
++  eHdr->e_ident[EI_OSABI] = (config->osabi == ELFOSABI_PS4) ? ELFOSABI_FREEBSD : config->osabi;
++  // ----- End OpenOrbis Changes -----
+   eHdr->e_ident[EI_ABIVERSION] = getAbiVersion();
+   eHdr->e_machine = config->emachine;
+   eHdr->e_version = EV_CURRENT;
+@@ -4778,6 +5043,12 @@ template <class ELFT> void elf::createSyntheticSections() {
+         add(*part.hashTab);
+       }
+ 
++      // ----- Start OpenOrbis Changes -----
++      if (config->osabi == ELFOSABI_PS4) {
++        part.sceDynlibdataFingerprint = std::make_unique<SceDynlibdataFingerprintSection<ELFT>>();
++        add(*part.sceDynlibdataFingerprint);
++      }
++      // ----- End OpenOrbis Changes -----
+       add(*part.dynamic);
+       add(*part.dynStrTab);
+     }
+@@ -4929,6 +5200,13 @@ InStruct elf::in;
+ std::vector<Partition> elf::partitions;
+ Partition *elf::mainPart;
+ 
++// ----- Start OpenOrbis Changes -----
++template class elf::SceDynlibdataFingerprintSection<ELF32LE>;
++template class elf::SceDynlibdataFingerprintSection<ELF32BE>;
++template class elf::SceDynlibdataFingerprintSection<ELF64LE>;
++template class elf::SceDynlibdataFingerprintSection<ELF64BE>;
++// ----- End OpenOrbis Changes -----
++
+ template void elf::splitSections<ELF32LE>();
+ template void elf::splitSections<ELF32BE>();
+ template void elf::splitSections<ELF64LE>();
+diff --git a/lld/ELF/SyntheticSections.h b/lld/ELF/SyntheticSections.h
+index d4169e1e1aca..58b6ab37d83b 100644
+--- a/lld/ELF/SyntheticSections.h
++++ b/lld/ELF/SyntheticSections.h
+@@ -1378,6 +1378,22 @@ public:
+   void writeTo(uint8_t *buf) override;
+ };
+ 
++// ----- Start OpenOrbis Changes -----
++template <class ELFT> class SceDynlibdataFingerprintSection final : public SyntheticSection {
++  LLVM_ELF_IMPORT_TYPES_ELFT(ELFT)
++
++public:
++  SceDynlibdataFingerprintSection();
++  void finalizeContents() override;
++  void writeTo(uint8_t *buf) override;
++  size_t getSize() const override { return size; }
++
++private:
++  uint64_t size = 0;
++};
++// ----- End OpenOrbis Changes -----
++
++
+ // See the following link for the Android-specific loader code that operates on
+ // this section:
+ // https://cs.android.com/android/platform/superproject/+/master:bionic/libc/bionic/libc_init_static.cpp;drc=9425b16978f9c5aa8f2c50c873db470819480d1d;l=192
+@@ -1458,6 +1474,9 @@ struct Partition {
+   std::unique_ptr<SymbolTableBaseSection> dynSymTab;
+   std::unique_ptr<EhFrameHeader> ehFrameHdr;
+   std::unique_ptr<EhFrameSection> ehFrame;
++  // ----- Start OpenOrbis Changes -----
++  std::unique_ptr<SyntheticSection> sceDynlibdataFingerprint;
++  // ----- End OpenOrbis Changes -----
+   std::unique_ptr<GnuHashTableSection> gnuHashTab;
+   std::unique_ptr<HashTableSection> hashTab;
+   std::unique_ptr<MemtagAndroidNote> memtagAndroidNote;
+diff --git a/lld/ELF/Writer.cpp b/lld/ELF/Writer.cpp
+index 8e3a746a08eb..a4bc1fc6ab11 100644
+--- a/lld/ELF/Writer.cpp
++++ b/lld/ELF/Writer.cpp
+@@ -2000,6 +2000,11 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
+       finalizeSynthetic(part.ehFrameHdr.get());
+       finalizeSynthetic(part.verSym.get());
+       finalizeSynthetic(part.verNeed.get());
++      // ----- Start OpenOrbis Changes -----
++      if (config->osabi == ELFOSABI_PS4) {
++        finalizeSynthetic(part.sceDynlibdataFingerprint.get());
++      }
++      // ----- End OpenOrbis Changes -----
+       finalizeSynthetic(part.dynamic.get());
+     }
+   }
+@@ -2563,6 +2568,14 @@ template <class ELFT> void Writer<ELFT>::setPhdrs(Partition &part) {
+       return;
+     }
+ 
++    // ----- Start OpenOrbis Changes -----
++      if (p->p_type == PT_SCE_DYNLIBDATA) {
++        p->p_memsz = 0;
++        p->p_vaddr = 0;
++        p->p_paddr = 0;
++      }
++    // ----- End OpenOrbis Changes -----
++
+     if (first) {
+       p->p_filesz = last->offset - first->offset;
+       if (last->type != SHT_NOBITS)
+@@ -2698,6 +2711,16 @@ static uint64_t getEntryAddr() {
+ }
+ 
+ static uint16_t getELFType() {
++  // ----- Start OpenOrbis Changes -----
++  if (config->osabi == ELFOSABI_PS4) {
++    if (config->isPic) {
++      if (getEntryAddr() != 0)
++        return ET_SCE_EXEC_ASLR;
++      return ET_SCE_DYNAMIC;
++    }
++    return ET_SCE_EXEC;
++  }
++  // ----- End OpenOrbis Changes -----
+   if (config->isPic)
+     return ET_DYN;
+   if (config->relocatable)
+diff --git a/llvm/include/llvm/BinaryFormat/DynamicTags.def b/llvm/include/llvm/BinaryFormat/DynamicTags.def
+index 2d4596c81ba8..0a7c38c54c42 100644
+--- a/llvm/include/llvm/BinaryFormat/DynamicTags.def
++++ b/llvm/include/llvm/BinaryFormat/DynamicTags.def
+@@ -126,6 +126,37 @@ DYNAMIC_TAG(VERNEED, 0X6FFFFFFE)    // The address of the version dependency
+                                     // table.
+ DYNAMIC_TAG(VERNEEDNUM, 0X6FFFFFFF) // The number of entries in DT_VERNEED.
+ 
++// ----- Start OpenOrbis Changes -----
++// PS4 specific dynamic table entry tags (OpenOrbis)
++DYNAMIC_TAG(SCE_FINGERPRINT, 0x61000007)
++DYNAMIC_TAG(SCE_FILENAME, 0x61000009)
++DYNAMIC_TAG(SCE_MODULE_INFO, 0x6100000D)
++DYNAMIC_TAG(SCE_NEEDED_MODULE, 0x6100000F)
++DYNAMIC_TAG(SCE_MODULE_ATTR, 0x61000011)
++DYNAMIC_TAG(SCE_EXPORT_LIB, 0x61000013)
++DYNAMIC_TAG(SCE_IMPORT_LIB, 0x61000015)
++DYNAMIC_TAG(SCE_EXPORT_LIB_ATTR, 0x61000017)
++DYNAMIC_TAG(SCE_IMPORT_LIB_ATTR, 0x61000019)
++DYNAMIC_TAG(SCE_STUB_MODULE_NAME, 0x6100001D)
++DYNAMIC_TAG(SCE_STUB_MODULE_VER, 0x6100001F)
++DYNAMIC_TAG(SCE_STUB_LIBRARY_NAME, 0x61000021)
++DYNAMIC_TAG(SCE_STUB_LIBRARY_VER, 0x61000023)
++DYNAMIC_TAG(SCE_HASH, 0x61000025)
++DYNAMIC_TAG(SCE_PLTGOT, 0x61000027)
++DYNAMIC_TAG(SCE_JMPREL, 0x61000029)
++DYNAMIC_TAG(SCE_PLTREL, 0x6100002B)
++DYNAMIC_TAG(SCE_PLTRELSZ, 0x6100002D)
++DYNAMIC_TAG(SCE_RELA, 0x6100002F)
++DYNAMIC_TAG(SCE_RELASZ, 0x61000031)
++DYNAMIC_TAG(SCE_RELAENT, 0x61000033)
++DYNAMIC_TAG(SCE_STRTAB, 0x61000035)
++DYNAMIC_TAG(SCE_STRSZ, 0x61000037)
++DYNAMIC_TAG(SCE_SYMTAB, 0x61000039)
++DYNAMIC_TAG(SCE_SYMENT, 0x6100003B)
++DYNAMIC_TAG(SCE_HASHSZ, 0x6100003D)
++DYNAMIC_TAG(SCE_SYMTABSZ, 0x6100003F)
++// ----- End OpenOrbis Changes -----
++
+ // AArch64 specific dynamic table entries
+ AARCH64_DYNAMIC_TAG(AARCH64_BTI_PLT, 0x70000001)
+ AARCH64_DYNAMIC_TAG(AARCH64_PAC_PLT, 0x70000003)
+diff --git a/llvm/include/llvm/BinaryFormat/ELF.h b/llvm/include/llvm/BinaryFormat/ELF.h
+index 456cffff6b4a..ce24becc3dfe 100644
+--- a/llvm/include/llvm/BinaryFormat/ELF.h
++++ b/llvm/include/llvm/BinaryFormat/ELF.h
+@@ -119,6 +119,11 @@ enum {
+   ET_DYN = 3,         // Shared object file
+   ET_CORE = 4,        // Core file
+   ET_LOOS = 0xfe00,   // Beginning of operating system-specific codes
++  // ----- Start OpenOrbis Changes -----
++  ET_SCE_EXEC = 0xfe00,
++  ET_SCE_EXEC_ASLR = 0xfe10,
++  ET_SCE_DYNAMIC = 0xfe18,
++  // ----- End OpenOrbis Changes -----
+   ET_HIOS = 0xfeff,   // Operating system-specific
+   ET_LOPROC = 0xff00, // Beginning of processor-specific codes
+   ET_HIPROC = 0xffff  // Processor-specific
+@@ -366,6 +371,9 @@ enum {
+   ELFOSABI_ARM_FDPIC = 65,     // ARM FDPIC
+   ELFOSABI_C6000_ELFABI = 64,  // Bare-metal TMS320C6000
+   ELFOSABI_C6000_LINUX = 65,   // Linux TMS320C6000
++  // ----- Start OpenOrbis Changes -----
++  ELFOSABI_PS4 = 254,
++  // ----- End OpenOrbis Changes -----
+   ELFOSABI_STANDALONE = 255,   // Standalone (embedded) application
+   ELFOSABI_LAST_ARCH = 255     // Last Architecture-specific OS ABI
+ };
+@@ -1511,7 +1519,11 @@ enum {
+   PT_MIPS_RTPROC = 0x70000001,   // Runtime procedure table.
+   PT_MIPS_OPTIONS = 0x70000002,  // Options segment.
+   PT_MIPS_ABIFLAGS = 0x70000003, // Abiflags segment.
+-
++  // ----- Start OpenOrbis Changes -----
++  PT_SCE_DYNLIBDATA = 0x61000000, // PS4 dynamic linking data
++  PT_SCE_PROC_PARAM = 0x61000001, // PS4 process parameters
++  PT_SCE_RELRO = 0x61000010,      // PS4 read-only relocations
++  // ----- End OpenOrbis Changes -----
+   // RISCV program header types.
+   PT_RISCV_ATTRIBUTES = 0x70000003,
+ };
+diff --git a/llvm/tools/llvm-readobj/ELFDumper.cpp b/llvm/tools/llvm-readobj/ELFDumper.cpp
+index f0a22f1568be..0c219f1d66ac 100644
+--- a/llvm/tools/llvm-readobj/ELFDumper.cpp
++++ b/llvm/tools/llvm-readobj/ELFDumper.cpp
+@@ -1079,6 +1079,11 @@ const EnumEntry<unsigned> ElfObjectFileType[] = {
+   {"Executable",   "EXEC (Executable file)",   ELF::ET_EXEC},
+   {"SharedObject", "DYN (Shared object file)", ELF::ET_DYN},
+   {"Core",         "CORE (Core file)",         ELF::ET_CORE},
++  // ----- Start OpenOrbis Changes -----
++  {"SCE_Executable", "SCE EXEC (Playstation Executable file)",                   ELF::ET_SCE_EXEC},
++  {"SCE_ASLR_Executable", "SCE ASLR EXEC (Playstation Executable file w/ ASLR)", ELF::ET_SCE_EXEC_ASLR},
++  {"SCE_SharedObject", "SCE PRX (Playstation library file)",                     ELF::ET_SCE_DYNAMIC},
++  // ----- End OpenOrbis Changes -----
+ };
+ 
+ const EnumEntry<unsigned> ElfOSABI[] = {
+@@ -1496,6 +1501,12 @@ static StringRef segmentTypeToString(unsigned Arch, unsigned Type) {
+     LLVM_READOBJ_ENUM_CASE(ELF, PT_OPENBSD_NOBTCFI);
+     LLVM_READOBJ_ENUM_CASE(ELF, PT_OPENBSD_SYSCALLS);
+     LLVM_READOBJ_ENUM_CASE(ELF, PT_OPENBSD_BOOTDATA);
++    // ----- Start OpenOrbis Changes -----
++    LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_DYNLIBDATA);
++    LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_PROC_PARAM);
++    LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_RELRO);
++    // ----- End OpenOrbis Changes -----
++
+   default:
+     return "";
+   }
+-- 
+2.47.1.windows.1
+

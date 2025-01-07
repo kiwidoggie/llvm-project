@@ -1,0 +1,43 @@
+From 45703c20bb2ac2f04940d9bce9a9a73965c8affc Mon Sep 17 00:00:00 2001
+From: kiwidoggie <forums@allenthinks.com>
+Date: Sat, 14 Dec 2024 14:55:25 -0500
+Subject: [PATCH 2/2] Fix compiler errors
+
+---
+ lld/ELF/SyntheticSections.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lld/ELF/SyntheticSections.cpp b/lld/ELF/SyntheticSections.cpp
+index c04a05573583..bb558ad2b115 100644
+--- a/lld/ELF/SyntheticSections.cpp
++++ b/lld/ELF/SyntheticSections.cpp
+@@ -1356,7 +1356,7 @@ DynamicSection<ELFT>::computeContents() {
+   std::string moduleName;
+   const InputSection &sceDynlibdataSec = *part.sceDynlibdataFingerprint;
+ 
+-  for (SharedFile *file : sharedFiles) {
++  for (SharedFile *file : ctx.sharedFiles) {
+     if (file->isNeeded) {
+       if (config->osabi == ELFOSABI_PS4) {
+         // Add needed
+@@ -2382,7 +2382,7 @@ std::string generateNID(Symbol *b) {
+ void SymbolTableBaseSection::addSymbol(Symbol *b) {
+   // Adding a local symbol to a .dynsym is a bug.
+   assert(this->type != SHT_DYNSYM || !b->isLocal());
+-  +  // ----- Start OpenOrbis Changes -----
++  // ----- Start OpenOrbis Changes -----
+   std::string libName;
+   std::string moduleName;
+   llvm::StringRef libNameRef;
+@@ -2393,7 +2393,7 @@ void SymbolTableBaseSection::addSymbol(Symbol *b) {
+   if (config->osabi == ELFOSABI_PS4 && this == mainPart->dynSymTab.get()) {
+     // If we don't have a module list, we need to create one to track the NID -> module mapping
+     if (!sceModuleListInit) {
+-      for (SharedFile *file : sharedFiles) {
++      for (SharedFile *file : ctx.sharedFiles) {
+         if (file->isNeeded) {
+           sceModuleList.push_back(file->soName.str());
+ 
+-- 
+2.47.1.windows.1
+

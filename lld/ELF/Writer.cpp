@@ -2000,6 +2000,11 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
       finalizeSynthetic(part.ehFrameHdr.get());
       finalizeSynthetic(part.verSym.get());
       finalizeSynthetic(part.verNeed.get());
+      // ----- Start OpenOrbis Changes -----
+      if (config->osabi == ELFOSABI_PS4) {
+        finalizeSynthetic(part.sceDynlibdataFingerprint.get());
+      }
+      // ----- End OpenOrbis Changes -----
       finalizeSynthetic(part.dynamic.get());
     }
   }
@@ -2563,6 +2568,14 @@ template <class ELFT> void Writer<ELFT>::setPhdrs(Partition &part) {
       return;
     }
 
+    // ----- Start OpenOrbis Changes -----
+      if (p->p_type == PT_SCE_DYNLIBDATA) {
+        p->p_memsz = 0;
+        p->p_vaddr = 0;
+        p->p_paddr = 0;
+      }
+    // ----- End OpenOrbis Changes -----
+
     if (first) {
       p->p_filesz = last->offset - first->offset;
       if (last->type != SHT_NOBITS)
@@ -2698,6 +2711,16 @@ static uint64_t getEntryAddr() {
 }
 
 static uint16_t getELFType() {
+  // ----- Start OpenOrbis Changes -----
+  if (config->osabi == ELFOSABI_PS4) {
+    if (config->isPic) {
+      if (getEntryAddr() != 0)
+        return ET_SCE_EXEC_ASLR;
+      return ET_SCE_DYNAMIC;
+    }
+    return ET_SCE_EXEC;
+  }
+  // ----- End OpenOrbis Changes -----
   if (config->isPic)
     return ET_DYN;
   if (config->relocatable)

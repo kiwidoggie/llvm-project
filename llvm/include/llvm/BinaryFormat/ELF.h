@@ -119,6 +119,11 @@ enum {
   ET_DYN = 3,         // Shared object file
   ET_CORE = 4,        // Core file
   ET_LOOS = 0xfe00,   // Beginning of operating system-specific codes
+  // ----- Start OpenOrbis Changes -----
+  ET_SCE_EXEC = 0xfe00,
+  ET_SCE_EXEC_ASLR = 0xfe10,
+  ET_SCE_DYNAMIC = 0xfe18,
+  // ----- End OpenOrbis Changes -----
   ET_HIOS = 0xfeff,   // Operating system-specific
   ET_LOPROC = 0xff00, // Beginning of processor-specific codes
   ET_HIPROC = 0xffff  // Processor-specific
@@ -366,6 +371,9 @@ enum {
   ELFOSABI_ARM_FDPIC = 65,     // ARM FDPIC
   ELFOSABI_C6000_ELFABI = 64,  // Bare-metal TMS320C6000
   ELFOSABI_C6000_LINUX = 65,   // Linux TMS320C6000
+  // ----- Start OpenOrbis Changes -----
+  ELFOSABI_PS4 = 254,
+  // ----- End OpenOrbis Changes -----
   ELFOSABI_STANDALONE = 255,   // Standalone (embedded) application
   ELFOSABI_LAST_ARCH = 255     // Last Architecture-specific OS ABI
 };
@@ -1511,7 +1519,11 @@ enum {
   PT_MIPS_RTPROC = 0x70000001,   // Runtime procedure table.
   PT_MIPS_OPTIONS = 0x70000002,  // Options segment.
   PT_MIPS_ABIFLAGS = 0x70000003, // Abiflags segment.
-
+  // ----- Start OpenOrbis Changes -----
+  PT_SCE_DYNLIBDATA = 0x61000000, // PS4 dynamic linking data
+  PT_SCE_PROC_PARAM = 0x61000001, // PS4 process parameters
+  PT_SCE_RELRO = 0x61000010,      // PS4 read-only relocations
+  // ----- End OpenOrbis Changes -----
   // RISCV program header types.
   PT_RISCV_ATTRIBUTES = 0x70000003,
 };

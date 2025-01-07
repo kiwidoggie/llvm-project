@@ -1378,6 +1378,22 @@ public:
   void writeTo(uint8_t *buf) override;
 };
 
+// ----- Start OpenOrbis Changes -----
+template <class ELFT> class SceDynlibdataFingerprintSection final : public SyntheticSection {
+  LLVM_ELF_IMPORT_TYPES_ELFT(ELFT)
+
+public:
+  SceDynlibdataFingerprintSection();
+  void finalizeContents() override;
+  void writeTo(uint8_t *buf) override;
+  size_t getSize() const override { return size; }
+
+private:
+  uint64_t size = 0;
+};
+// ----- End OpenOrbis Changes -----
+
+
 // See the following link for the Android-specific loader code that operates on
 // this section:
 // https://cs.android.com/android/platform/superproject/+/master:bionic/libc/bionic/libc_init_static.cpp;drc=9425b16978f9c5aa8f2c50c873db470819480d1d;l=192
@@ -1458,6 +1474,9 @@ struct Partition {
   std::unique_ptr<SymbolTableBaseSection> dynSymTab;
   std::unique_ptr<EhFrameHeader> ehFrameHdr;
   std::unique_ptr<EhFrameSection> ehFrame;
+  // ----- Start OpenOrbis Changes -----
+  std::unique_ptr<SyntheticSection> sceDynlibdataFingerprint;
+  // ----- End OpenOrbis Changes -----
   std::unique_ptr<GnuHashTableSection> gnuHashTab;
   std::unique_ptr<HashTableSection> hashTab;
   std::unique_ptr<MemtagAndroidNote> memtagAndroidNote;
