@@ -452,10 +452,14 @@ struct Config {
   llvm::SmallVector<std::pair<llvm::GlobPattern, llvm::StringRef>, 0>
       remapInputsWildcards;
   // ----- Start OpenOrbis Changes ------
-  llvm::StringRef authInfo;
-  llvm::StringRef nidFile;
-  bool eboot;
-  bool prx;
+  llvm::StringRef orbisAuthInfo;
+  llvm::StringRef orbisNidFile;
+  bool orbisEboot;
+  bool orbisPrx;
+  // llvm::StringRef orbisPaid;
+  // unsigned orbisAppVersion;
+  // unsigned orbisFirmwareVersion;
+  // llvm::StringRef orbisLibraryName;
   // ----- End OpenOrbis Changes -----
 };
 struct ConfigWrapper {

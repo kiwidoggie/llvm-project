@@ -485,15 +485,15 @@ static void checkOptions() {
     error("-z cet-report only supported on X86 and X86_64");
 
   // ----- Start OpenOrbis changes -----
-  if (config->eboot && config->prx)
+  if (config->orbisEboot && config->orbisPrx)
     error("--eboot and --prx cannot be used together");
 
   if (config->osabi != ELFOSABI_PS4 &&
-      !config->nidFile.empty())
+      !config->orbisNidFile.empty())
     error("nid file override can only be used with PS4 x86_64 ELFs");
 
   if (config->osabi != ELFOSABI_PS4 &&
-      !config->authInfo.empty())
+      !config->orbisAuthInfo.empty())
     error("authInfo override can only be used with PS4 x86_64 ELFs");
   // ----- End OpenOrbis changes -----
 }
@@ -1251,10 +1251,10 @@ static bool remapInputs(StringRef line, const Twine &location) {
 static void readConfigs(opt::InputArgList &args) {
 
   // ----- Start OpenOrbis changes -----
-  config->eboot = args.hasArg(OPT_eboot);
-  config->prx = args.hasArg(OPT_prx);
-  config->authInfo = args.getLastArgValue(OPT_auth_info);
-  config->nidFile = args.getLastArgValue(OPT_nid_file);
+  config->orbisEboot = args.hasArg(OPT_eboot);
+  config->orbisPrx = args.hasArg(OPT_prx);
+  config->orbisAuthInfo = args.getLastArgValue(OPT_auth_info);
+  config->orbisNidFile = args.getLastArgValue(OPT_nid_file);
   // ----- End OpenOrbis changes -----
 
   errorHandler().verbose = args.hasArg(OPT_verbose);
@@ -3214,4 +3214,10 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
 
   // Write the result to the file.
   writeResult<ELFT>();
+
+  // ----- Start OpenOrbis changes -----
+  if (config->orbisEboot) {
+  
+  }
+  // ----- End OpenOrbis changes -----
 }

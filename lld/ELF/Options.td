@@ -39,6 +39,12 @@ defm auth_info: Eq<"auth-info", "Orbis SELF auth info">;
 def eboot: F<"eboot">, HelpText<"Orbis SELF eboot creation">;
 def prx: F<"prx">, HelpText<"Orbis SELF prx creation">;
 defm nid_file: Eq<"nid-file", "Orbis NID override file">;
+defm sdk_ver: Eq<"sdk-ver", "Orbis SDK version (default: 0x1000051)">;
+defm program_type: Eq<"program-type", "Orbis program type">;
+defm program_auth_id: Eq<"program-auth-id", "Orbis program authentication id">;
+defm app_ver: Eq<"application-version", "Orbis application version">;
+defm firmware_ver: Eq<"firmware-version", "Orbis firmware version">;
+defm library_name: Eq<"library-version", "Orbis library name">;
 // ----- End OpenOrbis changes -----
 
 defm auxiliary: Eq<"auxiliary", "Set DT_AUXILIARY field to the specified name">;
