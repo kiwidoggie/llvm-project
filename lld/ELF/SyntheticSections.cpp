@@ -1365,14 +1365,14 @@ DynamicSection<ELFT>::computeContents() {
 
         // Add sce import module
         moduleValue = moduleOffset;
-        moduleValue |= (1UL << 32); // Major version
-        moduleValue |= (1UL << 40); // Minor version
+        moduleValue |= (1ULL << 32); // Major version
+        moduleValue |= (1ULL << 40); // Minor version
         moduleValue |= (moduleId << 48); // Module ID
         addInt(DT_SCE_NEEDED_MODULE, moduleValue);
 
         // Add sce import lib
         libraryValue = moduleOffset;
-        libraryValue |= (1UL << 32); // Version
+        libraryValue |= (1ULL << 32); // Version
         libraryValue |= (moduleId << 48); // Module ID
         addInt(DT_SCE_IMPORT_LIB, libraryValue);
 
@@ -2328,32 +2328,110 @@ void SymbolTableBaseSection::sortSymTabSymbols() {
 }
 
 // ----- Start OpenOrbis Changes -----
+std::string parseNonNamedNid(Symbol *b) { 
+  // Verify our symbol pointer
+  if (b == nullptr) {
+    return std::string();
+  }
+
+  // Store our prefix
+  static std::string openOrbisPrefix("openorbis_");
+
+  // Get the symbol name
+  auto symbolName = b->getName();
+
+  // Check if the symbol starts with our prefix
+  if (!symbolName.starts_with(openOrbisPrefix)) {
+    return std::string();
+  }
+
+  // Get the next instance of "_"
+  // The current stub tool spits out an example such as
+  // openorbis_I18N_6F4D342D79696346544C73
+  auto delimiterIndex = symbolName.find("_", openOrbisPrefix.length());
+  if (delimiterIndex == std::string::npos) {
+    return std::string();
+  }
+
+  // Check that we have some data near the end of the string
+  if (delimiterIndex + 1 >= symbolName.str().length()) {
+    return std::string();
+  }
+
+  // Get the library name
+  auto libraryName = symbolName.substr(
+      openOrbisPrefix.length(), (delimiterIndex - openOrbisPrefix.length()));
+
+  log("OpenOrbis Library: " + libraryName + "\r\n");
+
+  // Convert the llvm::stringRef to std::string
+  auto nidHexStringRef = symbolName.substr(delimiterIndex + 1);
+  auto nidHexString = nidHexStringRef.str();
+
+  // Validate that our hex bytes are a multiple of 2
+  if (nidHexString.length() % 2 != 0) {
+    return std::string();
+  }
+
+  // Convert the hex bytes array to literal string
+  auto convertedNid = std::string();
+  for (size_t i = 0; i < nidHexString.length(); i += 2) {
+    auto byteString = nidHexString.substr(i, 2);
+    convertedNid += static_cast<unsigned char>(std::stoi(byteString, nullptr, 16));
+  }
+  log("OpenOrbis converted nid: " + convertedNid + "\r\n");
+  // Return our converted nid
+  return convertedNid;
+}
+
 std::string generateNID(Symbol *b) {
   std::array<uint8_t, 8> nidHashTruncated;
   std::string symNameNID;
   std::string finalNID;
+  std::string nid;
   char encodedModuleId;
   int moduleId;
   int i;
 
-  // Add suffix
-  symNameNID = b->getName().str() + "\x51\x8D\x64\xA6\x35\xDE\xD8\xC1\xE6\xB0\x39\xB1\xC3\xE5\x52\x30";
-  auto nidHash = llvm::SHA1::hash(llvm::arrayRefFromStringRef(symNameNID));
+  // Handle auto-conversions of functions we don't have nids for
+  auto symbolName = b->getName();
+  auto openOrbisStart = symbolName.starts_with("openorbis_");
+  if (openOrbisStart)
+  {
+    nid = parseNonNamedNid(b);
+    if (nid.empty()) {
+      fatal("OpenOrbis: Error could not parse non-named nid (" +
+            symbolName.str() + ").\r\n");
+      return std::string();
+    }
+  } else {
+    // Add suffix
+    symNameNID =
+        b->getName().str() +
+        "\x51\x8D\x64\xA6\x35\xDE\xD8\xC1\xE6\xB0\x39\xB1\xC3\xE5\x52\x30";
+    auto nidHash = llvm::SHA1::hash(llvm::arrayRefFromStringRef(symNameNID));
 
-  // Reverse digest, take first 8 bytes, and base64 encode without trailing '='
-  std::reverse_copy(nidHash.begin(), nidHash.begin() + nidHashTruncated.size(), nidHashTruncated.begin());
+    // Reverse digest, take first 8 bytes, and base64 encode without trailing
+    // '='
+    std::reverse_copy(nidHash.begin(),
+                      nidHash.begin() + nidHashTruncated.size(),
+                      nidHashTruncated.begin());
 
-  auto nid = llvm::encodeBase64(nidHashTruncated);
-  nid = nid.substr(0, nid.length() - 1);
+    nid = llvm::encodeBase64(nidHashTruncated);
+    nid = nid.substr(0, nid.length() - 1);
 
-  // Replace forward slashes with dashes for encoding
-  std::replace(nid.begin(), nid.end(), '/', '-');
+    // Replace forward slashes with dashes for encoding
+    std::replace(nid.begin(), nid.end(), '/', '-');
+  }
 
   // Get containing file for symbol
-  if (b->file == nullptr) {
-    warn("sym '" + b->getName().str() + "' has null file ptr");
+  auto symbolInputFile = b->file;
+  if (symbolInputFile == nullptr) {
+    fatal("sym '" + b->getName().str() + "' has null file ptr");
+    return std::string();
   }
-  auto symFileName = b->file->getName().str();
+
+  auto symFileName = symbolInputFile->getName().str();
 
   // Find module index for NID
   moduleId = -1;
@@ -2373,7 +2451,7 @@ std::string generateNID(Symbol *b) {
 
   // Finalize NID. Format: [NID]#[Module Index]#[Library Index]
   encodedModuleId = char('A' + moduleId);
-  finalNID = nid + "#" + encodedModuleId + "#" + encodedModuleId;
+  finalNID = nid + "#" + encodedModuleId + "#" + encodedModuleId; // Should this be encodedModuleId twice???
   return finalNID;
 }
 // ----- End OpenOrbis Changes -----
