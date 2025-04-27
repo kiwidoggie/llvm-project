@@ -1661,6 +1661,9 @@ unsigned ScriptParser::readPhdrType() {
                      // ----- Start OpenOrbis Changes -----
                      .Case("PT_SCE_DYNLIBDATA", PT_SCE_DYNLIBDATA)
                      .Case("PT_SCE_PROC_PARAM", PT_SCE_PROC_PARAM)
+                     .Case("PT_SCE_MODULE_PARAM", PT_SCE_MODULE_PARAM)
+                     .Case("PT_SCE_COMMENT", PT_SCE_COMMENT)
+                     .Case("PT_SCE_VERSION", PT_SCE_VERSION)
                      .Case("PT_SCE_RELRO", PT_SCE_RELRO)
                      // ----- End OpenOrbis Changes -----
                      .Default(-1);

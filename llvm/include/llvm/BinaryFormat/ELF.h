@@ -1520,9 +1520,12 @@ enum {
   PT_MIPS_OPTIONS = 0x70000002,  // Options segment.
   PT_MIPS_ABIFLAGS = 0x70000003, // Abiflags segment.
   // ----- Start OpenOrbis Changes -----
-  PT_SCE_DYNLIBDATA = 0x61000000, // PS4 dynamic linking data
-  PT_SCE_PROC_PARAM = 0x61000001, // PS4 process parameters
-  PT_SCE_RELRO = 0x61000010,      // PS4 read-only relocations
+  PT_SCE_DYNLIBDATA = 0x61000000,   // PS4 dynamic linking data
+  PT_SCE_PROC_PARAM = 0x61000001,   // PS4 process parameters
+  PT_SCE_MODULE_PARAM = 0x61000002, // PS4 module parameters
+  PT_SCE_RELRO = 0x61000010,        // PS4 read-only relocations
+  PT_SCE_COMMENT = 0x6FFFFF00,     // PS4 comment
+  PT_SCE_VERSION = 0x6FFFFF01,     // PS4 version
   // ----- End OpenOrbis Changes -----
   // RISCV program header types.
   PT_RISCV_ATTRIBUTES = 0x70000003,

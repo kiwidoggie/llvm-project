@@ -1504,7 +1504,10 @@ static StringRef segmentTypeToString(unsigned Arch, unsigned Type) {
     // ----- Start OpenOrbis Changes -----
     LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_DYNLIBDATA);
     LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_PROC_PARAM);
+    LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_MODULE_PARAM);
     LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_RELRO);
+    LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_COMMENT);
+    LLVM_READOBJ_ENUM_CASE(ELF, PT_SCE_VERSION);
     // ----- End OpenOrbis Changes -----
 
   default:
