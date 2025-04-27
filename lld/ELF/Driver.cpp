@@ -483,6 +483,19 @@ static void checkOptions() {
   if (config->emachine != EM_386 && config->emachine != EM_X86_64 &&
       config->zCetReport != "none")
     error("-z cet-report only supported on X86 and X86_64");
+
+  // ----- Start OpenOrbis changes -----
+  if (config->eboot && config->prx)
+    error("--eboot and --prx cannot be used together");
+
+  if (config->osabi != ELFOSABI_PS4 &&
+      !config->nidFile.empty())
+    error("nid file override can only be used with PS4 x86_64 ELFs");
+
+  if (config->osabi != ELFOSABI_PS4 &&
+      !config->authInfo.empty())
+    error("authInfo override can only be used with PS4 x86_64 ELFs");
+  // ----- End OpenOrbis changes -----
 }
 
 static const char *getReproduceOption(opt::InputArgList &args) {
@@ -1236,6 +1249,14 @@ static bool remapInputs(StringRef line, const Twine &location) {
 
 // Initializes Config members by the command line options.
 static void readConfigs(opt::InputArgList &args) {
+
+  // ----- Start OpenOrbis changes -----
+  config->eboot = args.hasArg(OPT_eboot);
+  config->prx = args.hasArg(OPT_prx);
+  config->authInfo = args.getLastArgValue(OPT_auth_info);
+  config->nidFile = args.getLastArgValue(OPT_nid_file);
+  // ----- End OpenOrbis changes -----
+
   errorHandler().verbose = args.hasArg(OPT_verbose);
   errorHandler().vsDiagnostics =
       args.hasArg(OPT_visual_studio_diagnostics_format, false);

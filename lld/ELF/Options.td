@@ -34,6 +34,13 @@ multiclass B<string name, string help1, string help2> {
   def no_ # NAME: Flag<["--", "-"], "no-" # name>, HelpText<help2>;
 }
 
+// ----- Start OpenOrbis changes -----
+defm auth_info: Eq<"auth-info", "Orbis SELF auth info">;
+def eboot: F<"eboot">, HelpText<"Orbis SELF eboot creation">;
+def prx: F<"prx">, HelpText<"Orbis SELF prx creation">;
+defm nid_file: Eq<"nid-file", "Orbis NID override file">;
+// ----- End OpenOrbis changes -----
+
 defm auxiliary: Eq<"auxiliary", "Set DT_AUXILIARY field to the specified name">;
 
 def be8: F<"be8">, HelpText<"write a Big Endian ELF file using BE8 format (AArch32 only)">;
