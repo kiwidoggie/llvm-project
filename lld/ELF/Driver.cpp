@@ -66,6 +66,9 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
+// ----- Start OpenOrbis changes -----
+#include "llvm/Support/SHA256.h"
+// ----- End OpenOrbis changes ------
 #include <cstdlib>
 #include <tuple>
 #include <utility>
@@ -3217,7 +3220,89 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
 
   // ----- Start OpenOrbis changes -----
   if (config->orbisEboot) {
-  
+    // TODO: Open the output file
+
+    // Calculate the SHA256 digest so we can put it in the extended info header
+    // auto fileHash = llvm::SHA256::hash(nullptr);
+
+    // TODO: Create the SELF header
+    // TODO: Create the SELF header entries per PH in elf
+    // TODO: Add ELF header size
+    // TODO: Align
+    // TODO: Add space for SELF_EXTENDED_HEADER
+    // TODO: Add space for SELF_NPDRM_BLOCK
+
   }
   // ----- End OpenOrbis changes -----
+}
+
+typedef struct self_entry_t {
+  uint32_t props;
+  uint32_t reserved;
+  uint64_t offset;
+  uint64_t filesz;
+  uint64_t memsz;
+} self_entry_t, SelfEntry;
+static_assert(offsetof(struct self_entry_t, props) == 0x00);
+static_assert(offsetof(struct self_entry_t, offset) == 0x08);
+static_assert(offsetof(struct self_entry_t, filesz) == 0x10);
+static_assert(offsetof(struct self_entry_t, memsz) == 0x18);
+static_assert(sizeof(struct self_entry_t) == 0x20);
+
+typedef struct self_header_t {
+  uint32_t magic;
+  uint8_t version;
+  uint8_t mode;
+  uint8_t endian;
+  uint8_t attr;
+  uint32_t key_type;
+  uint16_t header_size;
+  uint16_t meta_size;
+  uint64_t file_size;
+  uint16_t num_entries;
+  uint16_t flags;
+  uint32_t reserved;
+  self_entry_t entries[0];
+} self_header_t, SelfHeader;
+
+typedef struct self_auth_info_t {
+  uint64_t paid;
+  uint64_t caps[4];
+  uint64_t attrs[4];
+  uint8_t unk[0x40];
+} self_auth_info_t, SelfAuthInfo;
+static_assert(offsetof(struct self_auth_info_t, paid) == 0x00);
+static_assert(offsetof(struct self_auth_info_t, caps) == 0x08);
+static_assert(offsetof(struct self_auth_info_t, attrs) == 0x28);
+static_assert(offsetof(struct self_auth_info_t, unk) == 0x48);
+static_assert(sizeof(struct self_auth_info_t) == 0x88);
+
+typedef struct self_ex_info_t {
+  uint64_t paid;
+  uint64_t ptype;
+  uint64_t app_version;
+  uint64_t firmware_version;
+  uint8_t digest[0x20];
+} self_ex_info_t, SelfExInfo;
+static_assert(offsetof(struct self_ex_info_t, paid) == 0x00);
+static_assert(offsetof(struct self_ex_info_t, ptype) == 0x08);
+static_assert(offsetof(struct self_ex_info_t, app_version) == 0x10);
+static_assert(offsetof(struct self_ex_info_t, firmware_version) == 0x18);
+static_assert(offsetof(struct self_ex_info_t, digest) == 0x20);
+static_assert(sizeof(struct self_ex_info_t) == 0x40);
+
+void writeSelf() {
+  //llvm::MemoryBuffer::getFile(config->outputFile, false, false, false,
+  //                            std::nullopt);
+
+  //Expected<std::unique_ptr<FileOutputBuffer>> bufferOrErr =
+  //    FileOutputBuffer::create(config->outputFile, fileSize, flags);
+
+  //if (!bufferOrErr) {
+  //  error("failed to open " + config->outputFile + ": " +
+  //        llvm::toString(bufferOrErr.takeError()));
+  //  return;
+  //}
+  //buffer = std::move(*bufferOrErr);
+  //Out::bufferStart = buffer->getBufferStart();
 }

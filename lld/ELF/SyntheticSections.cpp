@@ -2472,18 +2472,30 @@ void SymbolTableBaseSection::addSymbol(Symbol *b) {
     // If we don't have a module list, we need to create one to track the NID -> module mapping
     if (!sceModuleListInit) {
       for (SharedFile *file : ctx.sharedFiles) {
-        if (file->isNeeded) {
-          sceModuleList.push_back(file->soName.str());
+          // If this is not a needed file skip
+        if (!file->isNeeded)
+          continue;
 
-          // Create lib name string and add it to the dynstr table
-          libName = std::string(file->soName);
-          extpos = libName.find(".so");
-          if (extpos != std::string::npos)
-            libName.replace(extpos, sizeof(".prx"), ".prx");
+        // Add our module to the tracked list
+        sceModuleList.push_back(file->soName.str());
 
-          libNameRef = saver().save(libName);
-          sceLibraryOffsets.push_back(strTabSec.addString(libNameRef, false));
+        // Since stubtool puts each module in it's own section
+        auto fileSections = file->getSections();
+        for (auto &section : fileSections) {
+          if (!section->name.starts_with(".openorbis.fstubs."))
+            continue;
+
+          libName = section->name.substr(sizeof(".openorbis.fstubs."));
         }
+
+        // Create lib name string and add it to the dynstr table
+        libName = std::string(file->soName);
+        extpos = libName.find(".so");
+        if (extpos != std::string::npos)
+          libName.replace(extpos, sizeof(".prx"), ".prx");
+
+        libNameRef = saver().save(libName);
+        sceLibraryOffsets.push_back(strTabSec.addString(libNameRef, false));
       }
 
       for (auto module : sceModuleList) {
