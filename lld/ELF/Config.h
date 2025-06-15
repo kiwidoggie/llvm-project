@@ -453,13 +453,15 @@ struct Config {
       remapInputsWildcards;
   // ----- Start OpenOrbis Changes ------
   llvm::StringRef orbisAuthInfo;
-  llvm::StringRef orbisNidFile;
   bool orbisEboot;
   bool orbisPrx;
-  // llvm::StringRef orbisPaid;
-  // unsigned orbisAppVersion;
-  // unsigned orbisFirmwareVersion;
-  // llvm::StringRef orbisLibraryName;
+  llvm::StringRef orbisNidFile;
+  uint32_t orbisSdkVersion;
+  llvm::StringRef orbisProgramType;
+  uint64_t orbisProgramAuthId;
+  uint32_t orbisAppVersion;
+  uint32_t orbisFirmwareVersion;
+  llvm::StringRef orbisLibraryName;
   // ----- End OpenOrbis Changes -----
 };
 struct ConfigWrapper {

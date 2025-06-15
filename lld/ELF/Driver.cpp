@@ -69,6 +69,8 @@
 // ----- Start OpenOrbis changes -----
 #include "llvm/Support/SHA256.h"
 // ----- End OpenOrbis changes ------
+#include "llvm/Support/FormatVariadic.h"
+
 #include <cstdlib>
 #include <tuple>
 #include <utility>
@@ -86,6 +88,10 @@ Ctx elf::ctx;
 
 static void setConfigs(opt::InputArgList &args);
 static void readConfigs(opt::InputArgList &args);
+// ----- Start OpenOrbis changes -----
+static std::vector<uint8_t> orbisCreateSignature(const StringRef authInfo,
+                                                 const uint64_t paid);
+// ----- End OpenOrbis changes -----
 
 void elf::errorOrWarn(const Twine &msg) {
   if (config->noinhibitExec)
@@ -498,6 +504,16 @@ static void checkOptions() {
   if (config->osabi != ELFOSABI_PS4 &&
       !config->orbisAuthInfo.empty())
     error("authInfo override can only be used with PS4 x86_64 ELFs");
+
+  if (config->osabi == ELFOSABI_PS4 && (config->orbisProgramType != "fake" &&
+    config->orbisProgramType != "npdrm_exec" &&
+    config->orbisProgramType != "npdrm_dynlib" &&
+    config->orbisProgramType != "system_exec" &&
+    config->orbisProgramType != "system_dynlib" &&
+    config->orbisProgramType != "host_kernel" &&
+    config->orbisProgramType != "secure_module" &&
+    config->orbisProgramType != "secure_kernel"))
+    error("program_type must be of: fake, npdrm_exec, npdrm_dynlib, system_exec, system_dynlib, host_kernel, secure_module, secure_kernel}");
   // ----- End OpenOrbis changes -----
 }
 
@@ -1254,10 +1270,18 @@ static bool remapInputs(StringRef line, const Twine &location) {
 static void readConfigs(opt::InputArgList &args) {
 
   // ----- Start OpenOrbis changes -----
+  config->orbisAuthInfo = args.getLastArgValue(OPT_auth_info);
   config->orbisEboot = args.hasArg(OPT_eboot);
   config->orbisPrx = args.hasArg(OPT_prx);
-  config->orbisAuthInfo = args.getLastArgValue(OPT_auth_info);
   config->orbisNidFile = args.getLastArgValue(OPT_nid_file);
+  config->orbisSdkVersion = args::getZOptionValue(args, OPT_sdk_ver, "sdk-ver",
+                                       0x1000051);
+  config->orbisProgramType = args.getLastArgValue(OPT_program_type);
+  config->orbisProgramAuthId = args::getZOptionValue(args, OPT_program_auth_id, "program-auth-id",
+                                         0x3800000000000011);
+  config->orbisAppVersion = args::getZOptionValue(args, OPT_app_ver, "application-version", 0);
+  config->orbisFirmwareVersion = args::getZOptionValue(args, OPT_firmware_ver, "firmware-version", 0);
+  config->orbisLibraryName = args.getLastArgValue(OPT_library_name);
   // ----- End OpenOrbis changes -----
 
   errorHandler().verbose = args.hasArg(OPT_verbose);
@@ -3221,9 +3245,26 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
   // ----- Start OpenOrbis changes -----
   if (config->orbisEboot) {
     // TODO: Open the output file
+    auto outputElfOrError = MemoryBuffer::getFile(config->outputFile);
+    if (!outputElfOrError) {
+      errs() << "Error opening output file for reading: " <<
+        outputElfOrError.getError().message() << "\n";
+      return;
+    }
 
-    // Calculate the SHA256 digest so we can put it in the extended info header
-    // auto fileHash = llvm::SHA256::hash(nullptr);
+    // Get the OELF memory buffer
+    auto outElfMemBuffer = std::move(*outputElfOrError);
+
+    // Get a reference to the underlying memory
+    auto outElfMemBufferRef = outElfMemBuffer->getMemBufferRef();
+
+    // We need to cast the underlying data from StringRef to ArrayRef<uint8_t>
+    ArrayRef<uint8_t> outElfData(reinterpret_cast<const uint8_t*>(outElfMemBufferRef.getBuffer().data()), outElfMemBufferRef.getBuffer().size());
+
+    // Calculate the hash of the OELF
+    auto outElfHash = llvm::SHA256::hash(outElfData);
+
+    auto outElfSignature = orbisCreateSignature(config->orbisAuthInfo, config->orbisProgramAuthId);
 
     // TODO: Create the SELF header
     // TODO: Create the SELF header entries per PH in elf
@@ -3291,7 +3332,78 @@ static_assert(offsetof(struct self_ex_info_t, firmware_version) == 0x18);
 static_assert(offsetof(struct self_ex_info_t, digest) == 0x20);
 static_assert(sizeof(struct self_ex_info_t) == 0x40);
 
+static std::vector<uint8_t> orbisCreateSignature(const StringRef authInfo,
+                                                 const uint64_t paid) {
+  constexpr auto orbisSignatureSize = 0x100;
+
+  // Validate that we have a proper length authInfo
+  if (authInfo.size() % 2 != 0)
+    report_fatal_error("AuthID: string must be multiple of 2 (invalid hex string)");
+
+  // Lambda function for doing the hex string to byte conversion (untested)
+  auto convertToByte = [](char high, char low)-> uint8_t {
+    const auto hi = hexDigitValue(high);
+    const auto lo = hexDigitValue(low);
+    if (hi == -1U || lo == -1U)
+      report_fatal_error(formatv("AuthID: Invalid hex digit pair: '{0}{1}'", high, low));
+    return static_cast<uint8_t>((hi << 4) | lo);
+  };
+
+  // Allocate the required data
+  std::vector<uint8_t> authInfoBytes;
+  authInfoBytes.reserve(authInfo.size() / 2);
+
+  // Convert the data
+  for (size_t i = 0; i < authInfo.size(); i += 2) {
+    authInfoBytes.push_back(convertToByte(authInfo[i], authInfo[i+1]));
+  }
+
+  // Get the size of the auth info bytes
+  const uint64_t authInfoSize = authInfoBytes.size();
+
+  // Calculate the final buffer size
+  const auto finalBufferSize = sizeof(authInfoSize) + sizeof(paid) + authInfoBytes.size();
+
+  // Validate that the buffer is not larger than 256 bytes
+  if (finalBufferSize > orbisSignatureSize)
+    report_fatal_error("AuthId: authInfo + paid size is too large.");
+
+  // Calculate the padding
+  auto paddingSize = orbisSignatureSize - finalBufferSize;
+
+  // Create our output result
+  std::vector<uint8_t> result;
+
+  // Reserve the amount of data we need
+  result.reserve(orbisSignatureSize);
+
+  // Write the auth info size
+  memcpy(result.data(), &authInfoSize, sizeof(authInfoSize));
+
+  // Write the paid data
+  memcpy(result.data() + sizeof(authInfoSize), &paid, sizeof(paid));
+
+  // Write the auth info bytes
+  memcpy(result.data() + sizeof(authInfoSize) + sizeof(paid), authInfoBytes.data(), authInfoBytes.size());
+
+  // NOTE: The rest of the data should already be 0's
+
+  // Return the final result
+  return result;
+}
+
 void writeSelf() {
+  // TODO: Open up the file
+  // TODO: Create a SHA256 hash of the final oelf
+  // TODO: Create a output file handle for SELF
+  // TODO: Make the new signature
+  // TODO: Create SELF entries
+  // TODO: Align header size to 0x10
+  // TODO: Write meta block for segment
+  // TODO: Write data block for segment
+  // TODO: Set flags for SELF
+  // TODO: Write final fake self
+
   //llvm::MemoryBuffer::getFile(config->outputFile, false, false, false,
   //                            std::nullopt);
 
