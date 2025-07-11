@@ -2350,6 +2350,11 @@ SmallVector<PhdrEntry *, 0> Writer<ELFT>::createPhdrs(Partition &part) {
       note = nullptr;
     }
   }
+
+  // OpenOrbis Changes Start
+  scePhdrEntries = std::vector<PhdrEntry*>(ret.begin(), ret.end());
+  // OpenOrbis Changes End
+
   return ret;
 }
 

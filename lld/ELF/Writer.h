@@ -57,6 +57,10 @@ bool isMipsN32Abi(const InputFile *f);
 bool isMicroMips();
 bool isMipsR6();
 
+// ----- Start OpenOrbis changes -----
+extern std::vector<PhdrEntry*> scePhdrEntries;
+// ----- End OpenOrbis changes -----
+
 } // namespace lld::elf
 
 #endif

@@ -67,8 +67,10 @@
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
 // ----- Start OpenOrbis changes -----
+#include "Orbis.h"
 #include "llvm/Support/SHA256.h"
 // ----- End OpenOrbis changes ------
+
 #include "llvm/Support/FormatVariadic.h"
 
 #include <cstdlib>
@@ -88,9 +90,9 @@ Ctx elf::ctx;
 
 static void setConfigs(opt::InputArgList &args);
 static void readConfigs(opt::InputArgList &args);
+
 // ----- Start OpenOrbis changes -----
-static std::vector<uint8_t> orbisCreateSignature(const StringRef authInfo,
-                                                 const uint64_t paid);
+std::vector<PhdrEntry*> lld::elf::scePhdrEntries;
 // ----- End OpenOrbis changes -----
 
 void elf::errorOrWarn(const Twine &msg) {
@@ -3264,7 +3266,77 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
     // Calculate the hash of the OELF
     auto outElfHash = llvm::SHA256::hash(outElfData);
 
-    auto outElfSignature = orbisCreateSignature(config->orbisAuthInfo, config->orbisProgramAuthId);
+    auto outElfSignatureData =
+        orbisCreateSignature(config->orbisAuthInfo, config->orbisProgramAuthId);
+
+    uint64_t selfHeaderSize = SELF_HEADER_SIZE;
+
+    // Validate that we have some phdr entries
+    if (scePhdrEntries.empty()) {
+      errs() << "No sections found to FSELF\n";
+      return;
+    }
+
+    // Create the placeholder self entries
+    std::vector<self_entry_info_t> selfEntries;
+    uint64_t selfEntriesSize = 0;
+    createSelfEntries(scePhdrEntries, selfEntries, selfEntriesSize);
+
+    // Add the entries size to the total size
+    selfHeaderSize += selfEntriesSize;
+
+    // Add the ELF header size to the total size
+    selfHeaderSize += SELF_ELF_HEADER_SIZE;
+
+    // Add the size of all program headers
+    // TODO: Verify if this is correct, because createSelfEntries
+    // TODO: doesn't take all headers in account
+    selfHeaderSize += scePhdrEntries.size() + sizeof(Elf64_Phdr);
+
+    // Align the header
+    selfHeaderSize = llvm::alignTo(selfHeaderSize, 0x10);
+
+    selfHeaderSize += SELF_EXTENDED_HEADER_SIZE;
+    selfHeaderSize += SELF_NPDRM_BLOCK_SIZE;
+
+    // Start writing stuff
+    SmallVector<char, 0> buffer;
+    raw_svector_ostream os(buffer);
+
+    uint64_t entryIndex = 0;
+    for (uint64_t i = 0; i < scePhdrEntries.size(); i++) {
+      const PhdrEntry* headerEntry = scePhdrEntries[i];
+
+      if (headerEntry->p_type != PT_LOAD &&
+        headerEntry->p_type != PT_SCE_RELRO &&
+        headerEntry->p_type != PT_SCE_DYNLIBDATA)
+        continue;
+
+      uint64_t numBlocks = llvm::alignTo(headerEntry->p_filesz, BLOCK_SIZE) / BLOCK_SIZE;
+      std::vector metaData(SELF_META_DATA_BLOCK_SIZE * numBlocks, 0);
+
+      selfEntries[entryIndex].offset = 0;
+      selfEntries[entryIndex].fileSize = metaData.size();
+
+    }
+    // Process segments
+
+    /*for (OutputSection* sec : outputSections) {
+      if (!sec->isLive())
+        continue;
+
+      bool isExecutable = sec->flags & SHF_EXECINSTR;
+      bool isWritable = sec->flags & SHF_WRITE;
+
+      bool isTLS = sec->flags & SHF_TLS;
+      bool isDynamic = false;
+      bool isInterp = false;
+
+      if (sec->name == ".dynamic")
+        isDynamic = true;
+      else if (sec->name == ".interp")
+        isInterp = true;
+    }*/
 
     // TODO: Create the SELF header
     // TODO: Create the SELF header entries per PH in elf
@@ -3277,64 +3349,16 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
   // ----- End OpenOrbis changes -----
 }
 
-typedef struct self_entry_t {
-  uint32_t props;
-  uint32_t reserved;
-  uint64_t offset;
-  uint64_t filesz;
-  uint64_t memsz;
-} self_entry_t, SelfEntry;
-static_assert(offsetof(struct self_entry_t, props) == 0x00);
-static_assert(offsetof(struct self_entry_t, offset) == 0x08);
-static_assert(offsetof(struct self_entry_t, filesz) == 0x10);
-static_assert(offsetof(struct self_entry_t, memsz) == 0x18);
-static_assert(sizeof(struct self_entry_t) == 0x20);
 
-typedef struct self_header_t {
-  uint32_t magic;
-  uint8_t version;
-  uint8_t mode;
-  uint8_t endian;
-  uint8_t attr;
-  uint32_t key_type;
-  uint16_t header_size;
-  uint16_t meta_size;
-  uint64_t file_size;
-  uint16_t num_entries;
-  uint16_t flags;
-  uint32_t reserved;
-  self_entry_t entries[0];
-} self_header_t, SelfHeader;
-
-typedef struct self_auth_info_t {
-  uint64_t paid;
-  uint64_t caps[4];
-  uint64_t attrs[4];
-  uint8_t unk[0x40];
-} self_auth_info_t, SelfAuthInfo;
-static_assert(offsetof(struct self_auth_info_t, paid) == 0x00);
-static_assert(offsetof(struct self_auth_info_t, caps) == 0x08);
-static_assert(offsetof(struct self_auth_info_t, attrs) == 0x28);
-static_assert(offsetof(struct self_auth_info_t, unk) == 0x48);
-static_assert(sizeof(struct self_auth_info_t) == 0x88);
-
-typedef struct self_ex_info_t {
-  uint64_t paid;
-  uint64_t ptype;
-  uint64_t app_version;
-  uint64_t firmware_version;
-  uint8_t digest[0x20];
-} self_ex_info_t, SelfExInfo;
-static_assert(offsetof(struct self_ex_info_t, paid) == 0x00);
-static_assert(offsetof(struct self_ex_info_t, ptype) == 0x08);
-static_assert(offsetof(struct self_ex_info_t, app_version) == 0x10);
-static_assert(offsetof(struct self_ex_info_t, firmware_version) == 0x18);
-static_assert(offsetof(struct self_ex_info_t, digest) == 0x20);
-static_assert(sizeof(struct self_ex_info_t) == 0x40);
-
-static std::vector<uint8_t> orbisCreateSignature(const StringRef authInfo,
+std::vector<uint8_t> orbisCreateSignature(const StringRef authInfo,
                                                  const uint64_t paid) {
-  constexpr auto orbisSignatureSize = 0x100;
+
+  // If there is no auth info provided, then skip
+  if (authInfo.size() == 0) {
+    std::vector<uint8_t> emptySignature;
+    emptySignature.reserve(ORBIS_SIGNATURE_SIZE);
+    return emptySignature;
+  }
 
   // Validate that we have a proper length authInfo
   if (authInfo.size() % 2 != 0)
@@ -3365,17 +3389,17 @@ static std::vector<uint8_t> orbisCreateSignature(const StringRef authInfo,
   const auto finalBufferSize = sizeof(authInfoSize) + sizeof(paid) + authInfoBytes.size();
 
   // Validate that the buffer is not larger than 256 bytes
-  if (finalBufferSize > orbisSignatureSize)
+  if (finalBufferSize > ORBIS_SIGNATURE_SIZE)
     report_fatal_error("AuthId: authInfo + paid size is too large.");
 
   // Calculate the padding
-  auto paddingSize = orbisSignatureSize - finalBufferSize;
+  auto paddingSize = ORBIS_SIGNATURE_SIZE - finalBufferSize;
 
   // Create our output result
   std::vector<uint8_t> result;
 
   // Reserve the amount of data we need
-  result.reserve(orbisSignatureSize);
+  result.reserve(ORBIS_SIGNATURE_SIZE);
 
   // Write the auth info size
   memcpy(result.data(), &authInfoSize, sizeof(authInfoSize));
@@ -3390,6 +3414,73 @@ static std::vector<uint8_t> orbisCreateSignature(const StringRef authInfo,
 
   // Return the final result
   return result;
+}
+
+void createSelfEntries(std::vector<PhdrEntry*>& headerEntries, std::vector<self_entry_info_t>& outEntries, uint64_t& totalSize) {
+  auto setProperty = [](uint64_t p_Property, uint64_t p_Bit, uint64_t p_Mask, uint64_t p_Value) -> uint64_t {
+    return p_Property |= (p_Value & p_Mask) << p_Bit;
+  };
+
+  auto ilog2 = [](uint64_t val) -> uint64_t {
+    uint64_t log = 0;
+    while (val >>= 1)
+      ++log;
+
+    return log;
+  };
+
+  totalSize = 0;
+  outEntries.clear();
+
+  auto entryIndex = 0;
+
+  for (uint64_t i = 0; i < scePhdrEntries.size(); ++i) {
+    const PhdrEntry* headerEntry = scePhdrEntries[i];
+
+    // Skip non-load and non-sce related segments
+    // TODO: Investigate if this is all that is needed
+    // as in TLS? or any other program headers are needed
+    if (headerEntry->p_type != PT_LOAD &&
+      headerEntry->p_type != PT_SCE_RELRO &&
+      headerEntry->p_type != PT_SCE_DYNLIBDATA) {
+      continue;
+    }
+
+    // Create meta entry
+    uint64_t metaEntryProperties = 0;
+
+    // Meta entries are signed and have digits
+    metaEntryProperties = setProperty(metaEntryProperties, SELF_ENTRY_PROPERTY_BIT_SIGNED, 1, 1);
+    metaEntryProperties = setProperty(metaEntryProperties, SELF_ENTRY_PROPERTY_BIT_HASDIGESTS, 1, 1);
+    metaEntryProperties = setProperty(metaEntryProperties, SELF_ENTRY_PROPERTY_BIT_SEGMENT_INDEX, 0xFFFF, entryIndex + 1);
+
+    outEntries.push_back(SelfEntryInfo{
+      .properties = metaEntryProperties,
+      .offset = 0,
+      .fileSize = 0,
+      .memorySize = 0,
+    });
+
+    // Create data entry
+    uint64_t dataEntryProperties = 0;
+
+    // Data entries are signed and have data blocks
+    dataEntryProperties = setProperty(dataEntryProperties, SELF_ENTRY_PROPERTY_BIT_SIGNED, 1, 1);
+    dataEntryProperties = setProperty(dataEntryProperties, SELF_ENTRY_PROPERTY_BIT_HASBLOCKS, 1, 1);
+    dataEntryProperties = setProperty(dataEntryProperties, SELF_ENTRY_PROPERTY_BIT_BLOCKSIZE, 0xF, ilog2(BLOCK_SIZE) - 12);
+    dataEntryProperties = setProperty(dataEntryProperties, SELF_ENTRY_PROPERTY_BIT_SEGMENT_INDEX, 0xFFFF, i);
+
+    outEntries.push_back(SelfEntryInfo{
+      .properties = dataEntryProperties,
+      .offset = 0,
+      .fileSize = 0,
+      .memorySize = 0,
+    });
+
+    entryIndex += 2;
+  }
+
+  totalSize = outEntries.size() * SELF_META_DATA_BLOCK_SIZE;
 }
 
 void writeSelf() {
